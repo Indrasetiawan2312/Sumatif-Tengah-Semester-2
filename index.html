@@ -208,11 +208,25 @@
                     <table style="width:100%;">
                         <thead>
                             <tr style="background:#2c3e50; color:white;">
-                                <th>Nama Siswa</th><th>Kelas</th><th>Nilai</th><th>Status</th><th class="no-print" style="width:150px;">Aksi Guru</th>
+                                <th>Nama Siswa</th><th>Kelas</th><th>Nilai</th><th>Status</th><th class="no-print" style="width:200px;">Aksi Guru</th>
                             </tr>
                         </thead>
                         <tbody id="guru-body"></tbody>
                     </table>
+                </div>
+
+                <div id="detail-koreksi-guru" class="card hidden" style="margin-top:20px; border:2px solid var(--warning); background: #fffcf5;">
+                    <div style="display:flex; justify-content:space-between; align-items:center; border-bottom: 2px solid #eee; padding-bottom: 10px;">
+                        <h3 id="judul-koreksi" style="margin:0; color: var(--dark);">Koreksi Jawaban</h3>
+                        <button class="btn btn-sm" style="background:var(--danger);" onclick="tutupDetailKoreksi()">Tutup</button>
+                    </div>
+                    <div id="isi-koreksi-siswa" style="margin-top:15px; max-height:600px; overflow-y:auto; padding-right:10px;">
+                        </div>
+                    <div style="margin-top:20px; padding-top:15px; border-top:2px solid #eee; text-align:right;">
+                        <button class="btn" style="background:var(--success); width:auto; padding:10px 30px;" onclick="simpanKoreksiGuru()">
+                            <i class="fas fa-save"></i> SIMPAN PERUBAHAN NILAI
+                        </button>
+                    </div>
                 </div>
             </div>
 
@@ -242,7 +256,8 @@
         let mySchool = JSON.parse(localStorage.getItem('pjok_cfg'));
         let user = null; let currentGudang = []; let tempFile = []; let answers = {};
         let rekapChart = null; 
-        let guruDataGlobal = []; // Menyimpan semua data siswa untuk filter
+        let guruDataGlobal = []; 
+        let currentSiswaId = null; // Untuk koreksi manual
 
         window.onload = () => {
             if(mySchool) {
@@ -268,7 +283,7 @@
         function loginAdmin() {
             if(document.getElementById('pass-admin').value === "adminpusat") {
                 user = { role: 'admin', nama: 'Admin Pusat' }; launchApp(); 
-                lihatGudang(); loadDaftarSekolah(); // Load sekolah saat admin login
+                lihatGudang(); loadDaftarSekolah(); 
             } else alert("Salah!");
         }
         function loginGuru() {
@@ -343,16 +358,13 @@
         // --- GURU: MANAJEMEN SISWA & FILTER ---
         function monitorGuru() {
             db.ref(`sekolah/${user.npsn}/pengerjaan`).on('value', snap => {
-                guruDataGlobal = []; // Reset data global
+                guruDataGlobal = [];
                 const data = snap.val() || {};
-                
                 Object.keys(data).forEach(uid => {
                     let item = data[uid];
-                    item.uid = uid; // Simpan UID untuk edit/hapus
+                    item.uid = uid;
                     guruDataGlobal.push(item);
                 });
-                
-                // Render tabel dengan filter default (semua)
                 filterTabelGuru();
             });
         }
@@ -360,11 +372,7 @@
         function filterTabelGuru() {
             const filterKelas = document.getElementById('filter-cetak-guru').value;
             const tbody = document.getElementById('guru-body'); tbody.innerHTML = "";
-            
-            // Filter Data
-            const filteredData = guruDataGlobal.filter(s => {
-                return filterKelas === 'semua' || s.kelas === filterKelas;
-            });
+            const filteredData = guruDataGlobal.filter(s => filterKelas === 'semua' || s.kelas === filterKelas);
 
             if(filteredData.length === 0) {
                 tbody.innerHTML = "<tr><td colspan='5' style='text-align:center'>Tidak ada data untuk kelas ini.</td></tr>";
@@ -379,11 +387,96 @@
                     <td>${s.nilai || 0}</td>
                     <td>${s.status}</td>
                     <td class="no-print">
+                        <button class="btn-warning btn-sm" onclick="bukaDetailSiswa('${s.uid}')" title="Koreksi Jawaban"><i class="fas fa-check-square"></i> Koreksi</button>
                         <button class="btn-edit btn-sm" onclick="editSiswa('${s.uid}', '${s.nama}')" title="Edit Nama"><i class="fas fa-edit"></i></button>
                         <button class="btn-danger btn-sm" onclick="hapusSiswa('${s.uid}', '${s.nama}')" title="Hapus Permanen"><i class="fas fa-trash"></i></button>
                     </td>
                 </tr>`;
             });
+        }
+
+        // --- GURU: LOGIKA KOREKSI MANUAL (PG & URAIAN) ---
+        function bukaDetailSiswa(uid) {
+            currentSiswaId = uid;
+            const siswa = guruDataGlobal.find(s => s.uid == uid);
+            if(!siswa) return;
+
+            document.getElementById('judul-koreksi').innerText = `Koreksi: ${siswa.nama} (${siswa.kelas.replace('_', ' ')})`;
+            document.getElementById('detail-koreksi-guru').classList.remove('hidden');
+            
+            db.ref(`sekolah/${user.npsn}/master_soal/${siswa.kelas}`).once('value', snap => {
+                const masterSoal = snap.val() || [];
+                const container = document.getElementById('isi-koreksi-siswa');
+                container.innerHTML = "";
+
+                masterSoal.forEach((s, i) => {
+                    const jawabanSiswa = (siswa.jawaban && siswa.jawaban[i] !== undefined) ? siswa.jawaban[i] : "(Tidak Menjawab)";
+                    let boxHtml = `<div style="margin-bottom:15px; padding:15px; border:1px solid #ddd; border-radius:10px; background:white;">
+                                    <div style="font-weight:bold; margin-bottom:8px;">Soal No. ${i+1}: ${s.tanya}</div>`;
+
+                    if (s.opsi) {
+                        // LOGIKA PG
+                        let indexKunci = s.kunci.toLowerCase().charCodeAt(0) - 97;
+                        let textKunci = parseOpsi(s.opsi[indexKunci]).text;
+                        let textSiswa = typeof jawabanSiswa === 'number' ? parseOpsi(s.opsi[jawabanSiswa]).text : jawabanSiswa;
+                        let isBenar = (String.fromCharCode(97 + jawabanSiswa) === s.kunci.toLowerCase());
+
+                        boxHtml += `
+                            <div style="font-size:13px; color:#555;">Kunci: <b style="color:green;">${s.kunci.toUpperCase()}. ${textKunci}</b></div>
+                            <div style="font-size:13px; color:#555;">Siswa: <b style="color:${isBenar?'green':'red'};">${textSiswa}</b></div>
+                            <div style="margin-top:10px;">
+                                Set Poin: <select class="poin-input" data-idx="${i}" style="width:100px; display:inline;">
+                                    <option value="1" ${isBenar?'selected':''}>Benar (1)</option>
+                                    <option value="0" ${!isBenar?'selected':''}>Salah (0)</option>
+                                </select>
+                            </div>`;
+                    } else {
+                        // LOGIKA URAIAN
+                        boxHtml += `
+                            <div style="font-size:13px; color:#555;">Kunci/Keyword: <b style="color:blue;">${s.jawaban}</b></div>
+                            <div style="background:#f4f7f6; padding:10px; border-radius:5px; margin:8px 0; font-style:italic;">"${jawabanSiswa}"</div>
+                            <div style="margin-top:10px;">
+                                Beri Poin (0 - 1): <input type="number" class="poin-input" data-idx="${i}" step="0.1" min="0" max="1" 
+                                value="${siswa.poin_manual ? (siswa.poin_manual[i] || 0) : (jawabanSiswa.toString().toLowerCase() == s.jawaban.toString().toLowerCase() ? 1 : 0)}" 
+                                style="width:80px; display:inline;">
+                                <small style="color:#888; margin-left:10px;">*Contoh: 0.5 jika jawaban mirip/mendekati.</small>
+                            </div>`;
+                    }
+                    boxHtml += `</div>`;
+                    container.innerHTML += boxHtml;
+                });
+                document.getElementById('detail-koreksi-guru').scrollIntoView({ behavior: 'smooth' });
+            });
+        }
+
+        function simpanKoreksiGuru() {
+            if(!currentSiswaId) return;
+            const inputs = document.querySelectorAll('.poin-input');
+            let totalPoinSiswa = 0;
+            let recordPoin = {};
+
+            inputs.forEach(inp => {
+                let p = parseFloat(inp.value) || 0;
+                totalPoinSiswa += p;
+                recordPoin[inp.dataset.idx] = p;
+            });
+
+            const nilaiAkhir = Math.round((totalPoinSiswa / inputs.length) * 100);
+
+            if(confirm(`Nilai baru siswa: ${nilaiAkhir}. Simpan perubahan?`)) {
+                db.ref(`sekolah/${user.npsn}/pengerjaan/${currentSiswaId}`).update({
+                    nilai: nilaiAkhir,
+                    poin_manual: recordPoin
+                }).then(() => {
+                    alert("Koreksi berhasil disimpan!");
+                    tutupDetailKoreksi();
+                });
+            }
+        }
+
+        function tutupDetailKoreksi() {
+            document.getElementById('detail-koreksi-guru').classList.add('hidden');
+            currentSiswaId = null;
         }
 
         function editSiswa(uid, oldName) {
@@ -453,7 +546,7 @@
             });
         }
 
-        // --- HELPER DATA & GUDANG SOAL (FIXED IMAGE PREVIEW) ---
+        // --- HELPER DATA & GUDANG SOAL ---
         function parseOpsi(o) {
             if (typeof o === 'object' && o !== null) return { text: o.t || "", img: o.i || o.imgS || o.img || o.url || null };
             return { text: o, img: null };
@@ -479,8 +572,6 @@
                 currentGudang.forEach((s, i) => {
                     let previewOpsi = "";
                     let kDisplay = "?";
-                    
-                    // Cek Gambar Soal
                     let soalImgUrl = parseSoalImg(s);
                     let soalImgHtml = soalImgUrl ? `<br><img src="${soalImgUrl}" class="img-soal">` : '';
 
@@ -489,10 +580,7 @@
                             let d = parseOpsi(o);
                             let isK = (String(s.kunci).toLowerCase() == String.fromCharCode(97+idx));
                             if(isK) kDisplay = String.fromCharCode(65+idx);
-                            
-                            // Cek Gambar Opsi
                             let opsiImgHtml = d.img ? `<img src="${d.img}" class="img-opsi">` : '';
-                            
                             previewOpsi += `
                             <div style="font-size:11px; margin-bottom:5px; ${isK?'background:#d4edda; padding:5px; border-radius:4px;':''}">
                                 <b>${String.fromCharCode(65+idx)}.</b> ${d.text} 
@@ -588,5 +676,4 @@
         }
     </script>
 </body>
-
 </html>
